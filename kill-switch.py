@@ -20,6 +20,8 @@ for key in mgs:
 
     if "127.0.0.1" in url or 'localhost' in url:
         deleteResponse = requests.delete(f'{MIDDLEWARE_URL}/deleteMG/{key}')
+        print("Delete MG: " + str(deleteResponse.status_code) + ":" + str(deleteResponse.data))
 
-        if deleteResponse.status_code == 200:
-            print("Delete MG: " + key)
+    if mg['author'] != 'zpzhang2' or mg['author'] != 'aaryab2':
+        deleteResponse = requests.delete(f'{MIDDLEWARE_URL}/deleteMG/{key}')
+        print("Delete MG: " + str(deleteResponse.status_code))
