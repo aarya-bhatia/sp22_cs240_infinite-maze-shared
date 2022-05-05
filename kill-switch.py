@@ -18,7 +18,7 @@ for key in mgs:
     
     url = mg["url"]
 
-    if "127.0.0.1" in url:
+    if "127.0.0.1" in url or 'localhost' in url:
         deleteResponse = requests.delete(f'{MIDDLEWARE_URL}/deleteMG/{key}')
 
         if deleteResponse.status_code == 200:
