@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from os import environ
 from flask import Flask, jsonify, redirect, render_template, request
 from maze.maze import Maze
@@ -7,10 +10,11 @@ import time
 import requests
 from datetime import datetime, timedelta
 from global_maze import GlobalMaze
-import random
+import uuid
 
 FREE_SPACE_RADIUS = 10
 ALLOW_DELETE_MAZE = True
+DISABLE_INFINITE_MAZE = False
 
 STATUS_OK = 0
 STATUS_BAD = 1
@@ -33,12 +37,28 @@ DEFAULT_MG_2 = ["988088c", "1000004", "1000004",
                 "0000000", "1000004", "1000004", "3220226"]
 
 user_color_choice = {}
+def get_user_color(user):
+    if user in user_color_choice:
+        return user_color_choice[user]
+    else:
+        return "000000"
 
 
 @app.route('/', methods=["GET"])
 def GET_index():
     '''Route for "/" (frontend)'''
-    return render_template("index.html")
+    if DISABLE_INFINITE_MAZE:
+        return render_template("maze-disabled.html")    
+    else:
+        return render_template("index.html")
+
+
+@app.route('/one/<mid>/', methods=["GET"])
+def GET_one_maze(mid):
+    '''Route for "/" (frontend)'''
+    server = server_manager.find_by_id(mid)
+    return render_template("one.html", mid=mid, server=server)
+
 
 
 @app.route('/addUserColor/<user>/<color>', methods=["POST"])
@@ -50,6 +70,9 @@ def add_user_color(user, color):
 @app.route('/<user>/generateSegment', methods=["GET"])
 def gen_rand_maze_segment(user):
     '''Route for maze generation with random generator'''
+
+    if DISABLE_INFINITE_MAZE:
+        return "The infinite maze is disabled until final exam session -- see you soon!", 503
 
     # get row and col
     row = 0
@@ -66,40 +89,27 @@ def gen_rand_maze_segment(user):
         tmp["color"] = old_segment[1]
         return jsonify(tmp), 200
 
-    # If no MGs online, send the default one only
-    if not server_manager.has_servers():
-        print('No maze generators available')
-        return jsonify({"geom": MAZE_ERR_503}), 200
-        # return jsonify({"geom": DEFAULT_MG_1 if random.random() < 0.5 else DEFAULT_MG_2}), 200
-
     # scan free space
     free_space = []
     for coords in maze_state.get_free_space(row, col, FREE_SPACE_RADIUS):
         free_space.append(coords[0])
         free_space.append(coords[1])
 
-    mg_name = server_manager.select_random()
-    print("MG Selected: " + mg_name)
+    # generate segment:
+    status = 0
+    while status // 100 != 2:
+        # If no MGs online, send the default one only
+        if not server_manager.has_servers():
+            print('No maze generators available')
+            return jsonify({"geom": MAZE_ERR_503}), 200
+            # return jsonify({"geom": DEFAULT_MG_1 if random.random() < 0.5 else DEFAULT_MG_2}), 200
 
-    output, status = gen_maze_segment(
-        mg_name, data={'main': [row, col], 'free': free_space})
-
-    if status // 100 != 2:
-        # return output, status
-        # RETRY DIFFERENT MAZE GENERATOR ON ERROR
-        while status // 100 != 2:
-            if not server_manager.has_servers():
-                print('No maze generators available')
-                return jsonify({"geom": MAZE_ERR_503}), 200
-                # return jsonify({"geom": DEFAULT_MG_1 if random.random() < 0.5 else DEFAULT_MG_2}), 200
-
-            mg_name = server_manager.select_random()
-            print("MG Selected: " + mg_name)
-            output, status = gen_maze_segment(
-                mg_name, data={'main': [row, col], 'free': free_space})
+        mg_name = server_manager.select_random()
+        mid = server_manager.get_mid_from_name(mg_name)
+        print("MG Selected: " + mg_name)
+        output, status = gen_maze_segment(mid, data={'main': [row, col], 'free': free_space})
 
     data = json.loads(output.data)
-    # print(data)
 
     # intercept 'extern' key
     if 'extern' in data.keys():
@@ -107,12 +117,12 @@ def gen_rand_maze_segment(user):
             # add external segments to maze_state
             r, c = [int(x) for x in key.split('_')]
             if maze_state.get_state(r, c) == None:
-                maze_state.set_state(r, c, val, user_color_choice[user])
+                maze_state.set_state(r, c, val, get_user_color(user), user)
 
         # hide external segments from front-end
         del data['extern']
 
-    maze_state.set_state(row, col, data, user_color_choice[user])
+    maze_state.set_state(row, col, data, get_user_color(user), user)
 
     server = server_manager.find(mg_name)
     prevCount = int(server['count']) if 'count' in server else 0
@@ -121,11 +131,11 @@ def gen_rand_maze_segment(user):
     return jsonify(data), 200
 
 
-@app.route('/generateSegment/<mg_name>', methods=['GET'])
-def gen_maze_segment(mg_name: str, data=None):
+@app.route('/generateSegment/<mid>', methods=['GET'])
+def gen_maze_segment(mid: str, data=None):
     '''Route for maze generation with specific generator'''
 
-    server = server_manager.find(mg_name)
+    server = server_manager.find_by_id(mid)
 
     if not server:
         return 'Server not found', 404
@@ -204,7 +214,7 @@ def add_maze_generator():
         return 'Data is missing', 400
 
     if 'name' not in data:
-        return 'Mg Name is missing', 400
+        return 'MG name is missing', 400
 
     mg_name = data['name']
 
@@ -212,6 +222,10 @@ def add_maze_generator():
         # update
         if not ALLOW_DELETE_MAZE:
             return "The current server settings does not allow MGs to be modified.", 401
+
+        # assume MG is good
+        data['status'] = STATUS_OK
+        data['message'] = ''
 
         status, message = server_manager.update(mg_name, data)
 
@@ -232,6 +246,7 @@ def add_maze_generator():
             return 'Weight cannot be 0 or negative', 400
     else:
         new_weight = 1
+    new_weight = 1
 
     server = {
         'name': request.json['name'],
@@ -259,7 +274,10 @@ def add_maze_generator():
 
 @app.route('/servers', methods=['GET'])
 def FindServers():
-    return render_template('servers.html', data={"servers": server_manager.servers})
+    serverList = server_manager.servers.values()
+    serverList = sorted(serverList, key = lambda e: e['author'])
+
+    return render_template('servers.html', data={"servers": serverList})
 
 
 @app.route('/listMG', methods=['GET'])
@@ -278,6 +296,9 @@ def dump_maze_state():
 @app.route('/resetMaze', methods=['GET'])
 def reset_maze_state():
     '''Reset global maze state.'''
+    if not ALLOW_DELETE_MAZE:
+        return "The current server settings does not allow the maze to be reset.", 401
+
     global maze_state
     if not maze_state.is_empty():
         maze_state.reset()
@@ -316,13 +337,13 @@ def logData():
     }), 200
 
 
-@app.route('/heartbeat', methods=['POST'])
+@app.route('/heartbeat', methods=['PATCH'])
 def heartbeat():
     '''Route for exchanging player location information'''
     # get POST data
-    data = dict(request.form)
+    data = request.json
     # remove user id from data
-    u = data.pop("user")
+    u = data["user"]
     # get current time
     now = int(time.time())
     # add a timestamp to the heartbeat data
@@ -332,11 +353,28 @@ def heartbeat():
     # remove players that haven't sent a heartbeat in at least
     #  10 seconds
     for k in list(crumbs.keys()):
+        if k[0] == "_": continue
+
         age = now - crumbs[k]["time"]
         if age > 10:
             try:
                 del crumbs[k]
             except KeyError:
                 continue
+    
+    crumbs["_totalBlocks"] = maze_state.get_size()
+    crumbs["_userBlocks"] = maze_state.get_segments_by_uid(u)
+
     # return location information for all players
     return jsonify(crumbs), 200
+
+
+
+@app.route('/enableMaze', methods=['GET'])
+def enable_maze():
+    global DISABLE_INFINITE_MAZE
+    if environ["ENABLE_MAZE"] == request.args["q"]:
+        DISABLE_INFINITE_MAZE = False
+        return '', 200
+    else:
+        return 'Unauthorized', 401       
